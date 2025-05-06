@@ -34,8 +34,6 @@ T = TypeVar("T")
 def calculate_scheduling_parameters(
     base_steps: int,
     hires_steps: int | None = None,
-    *,
-    use_old_scheduling: bool = False,
 ) -> tuple[int, int, float]:
     """
     Calculate the scheduling parameters based on the steps and mode.
@@ -43,12 +41,11 @@ def calculate_scheduling_parameters(
     Args:
         base_steps: The base number of steps for sampling
         hires_steps: Optional high-resolution steps
-        use_old_scheduling: Whether to use the legacy scheduling mode
 
     Returns:
         A tuple of (int_offset, flt_offset, steps)
     """
-    if hires_steps is None or use_old_scheduling:
+    if hires_steps is None:
         return 0, 0.0, base_steps
     return base_steps, 1.0, hires_steps
 
@@ -56,10 +53,9 @@ def calculate_scheduling_parameters(
 class StepCollector(lark.Visitor):
     """Visitor that collects steps from scheduled and alternate nodes."""
 
-    def __init__(self, total_steps: int, *, use_old_scheduling: bool = False, flt_offset: float = 0.0, int_offset: int = 0) -> None:
+    def __init__(self, total_steps: int, *, flt_offset: float = 0.0, int_offset: int = 0) -> None:
         self.steps = [total_steps]
         self.total_steps = total_steps
-        self.use_old_scheduling = use_old_scheduling
         self.flt_offset = flt_offset
         self.int_offset = int_offset
 
@@ -68,7 +64,7 @@ class StepCollector(lark.Visitor):
         s = tree.children[-2]
         v = float(s)
 
-        v = (v * self.total_steps if v < 1 else v) if self.use_old_scheduling else (v - self.flt_offset) * self.total_steps if "." in s else v - self.int_offset
+        v = (v - self.flt_offset) * self.total_steps if "." in s else v - self.int_offset
 
         tree.children[-2] = min(self.total_steps, int(v))
         if tree.children[-2] >= 1:
@@ -82,7 +78,7 @@ class StepCollector(lark.Visitor):
 class StepEvaluator(lark.Transformer):
     """Transformer that evaluates a parse tree at a specific step."""
 
-    def __init__(self, step: int):
+    def __init__(self, step: int) -> None:
         super().__init__()
         self.step = step
 
@@ -117,21 +113,20 @@ class StepEvaluator(lark.Transformer):
                 yield from self._flatten(gen)
 
 
-def collect_steps_from_tree(tree: lark.Tree, steps: int, *, use_old_scheduling: bool = False, int_offset: int = 0, flt_offset: float = 0.0) -> list[int]:
+def collect_steps_from_tree(tree: lark.Tree, steps: int, *, int_offset: int = 0, flt_offset: float = 0.0) -> list[int]:
     """
     Collect all the steps that need to be evaluated from a parse tree.
 
     Args:
         tree: The parsed tree
         steps: Total number of steps
-        use_old_scheduling: Whether to use legacy scheduling
         int_offset: Integer offset for step calculation
         flt_offset: Float offset for step calculation
 
     Returns:
         A sorted list of unique step numbers
     """
-    collector = StepCollector(steps, use_old_scheduling, flt_offset, int_offset)
+    collector = StepCollector(steps, flt_offset=flt_offset, int_offset=int_offset)
     collector.visit(tree)
     return sorted(set(collector.steps))
 
@@ -155,8 +150,6 @@ def get_learned_conditioning_prompt_schedules(
     prompts: list[str],
     base_steps: int,
     hires_steps: int | None = None,
-    *,
-    use_old_scheduling: bool = False,
 ) -> list[list[tuple[int, str]]]:
     """
     Parses a list of prompts into a list of prompt schedules.
@@ -166,7 +159,6 @@ def get_learned_conditioning_prompt_schedules(
     int_offset, flt_offset, steps = calculate_scheduling_parameters(
         base_steps,
         hires_steps,
-        use_old_scheduling,
     )
 
     def get_schedule(prompt: str) -> list[tuple[int, str]]:
@@ -178,9 +170,8 @@ def get_learned_conditioning_prompt_schedules(
         step_list = collect_steps_from_tree(
             tree,
             steps,
-            use_old_scheduling,
-            int_offset,
-            flt_offset,
+            int_offset=int_offset,
+            flt_offset=flt_offset,
         )
 
         return [[t, evaluate_tree_at_step(tree, t)] for t in step_list]
@@ -237,8 +228,6 @@ def get_learned_conditioning(
     prompts: SdConditioning | list[str],
     steps: int,
     hires_steps: int | None = None,
-    *,
-    use_old_scheduling: bool = False,
 ) -> list[list[ScheduledPromptConditioning]]:
     """converts a list of prompts into a list of prompt schedules - each schedule is a list of ScheduledPromptConditioning, specifying the comdition (cond),
     and the sampling step at which this condition is to be replaced by the next one.
@@ -259,7 +248,7 @@ def get_learned_conditioning(
     """
     res = []
 
-    prompt_schedules = get_learned_conditioning_prompt_schedules(prompts, steps, hires_steps, use_old_scheduling=use_old_scheduling)
+    prompt_schedules = get_learned_conditioning_prompt_schedules(prompts, steps, hires_steps)
     cache = {}
 
     for prompt, prompt_schedule in zip(prompts, prompt_schedules, strict=False):
@@ -354,8 +343,6 @@ def get_multicond_learned_conditioning(
     prompts: SdConditioning | list[str],
     steps: int,
     hires_steps: int | None = None,
-    *,
-    use_old_scheduling: bool = False,
 ) -> MulticondLearnedConditioning:
     """same as get_learned_conditioning, but returns a list of ScheduledPromptConditioning along with the weight objects for each prompt.
     For each prompt, the list is obtained by splitting the prompt using the AND separator.
@@ -365,7 +352,7 @@ def get_multicond_learned_conditioning(
 
     res_indexes, prompt_flat_list, prompt_indexes = get_multicond_prompt_list(prompts)
 
-    learned_conditioning = get_learned_conditioning(model, prompt_flat_list, steps, hires_steps, use_old_scheduling)
+    learned_conditioning = get_learned_conditioning(model, prompt_flat_list, steps, hires_steps)
 
     res = [[ComposableScheduledPromptConditioning(learned_conditioning[i], weight) for i, weight in indexes] for indexes in res_indexes]
     return MulticondLearnedConditioning(shape=(len(prompts),), batch=res)
@@ -524,6 +511,66 @@ re_attention = re.compile(
 re_break = re.compile(r"\s*\bBREAK\b\s*", re.DOTALL)
 
 
+def apply_multiplier_to_range(
+    tokens: list[list[str | float]],
+    start_position: int,
+    multiplier: float,
+) -> None:
+    """
+    Apply a weight multiplier to a range of tokens starting from a given position.
+
+    Args:
+        tokens: List of [text, weight] pairs to modify
+        start_position: Starting position to apply the multiplier
+        multiplier: Weight multiplier to apply
+    """
+    for p in range(start_position, len(tokens)):
+        tokens[p][1] *= multiplier
+
+
+def process_text_token(text: str) -> list[list[str | float]]:
+    """
+    Process a text token, handling BREAK tokens if present.
+
+    Args:
+        text: Text to process
+
+    Returns:
+        List of [text, weight] pairs
+    """
+    result = []
+    parts = re.split(re_break, text)
+    for i, part in enumerate(parts):
+        if i > 0:
+            result.append(["BREAK", -1])
+        result.append([part, 1.0])
+    return result
+
+
+def merge_identical_weights(tokens: list[list[str | float]]) -> list[list[str | float]]:
+    """
+    Merge consecutive tokens with identical weights.
+
+    Args:
+        tokens: List of [text, weight] pairs
+
+    Returns:
+        List with merged tokens
+    """
+    if not tokens:
+        return [["", 1.0]]
+
+    i = 0
+    while i + 1 < len(tokens):
+        if tokens[i][1] == tokens[i + 1][1]:
+            tokens[i][0] += tokens[i + 1][0]
+            tokens.pop(i + 1)
+        else:
+            i += 1
+
+    return tokens
+
+
 def parse_prompt_attention(text: str) -> list[list[tuple[str, float]]]:
     """
     Parses a string with attention tokens and returns a list of pairs: text and its associated weight.
@@ -538,7 +585,6 @@ def parse_prompt_attention(text: str) -> list[list[tuple[str, float]]]:
       \\ - literal character '\'
       anything else - just text
     """
-
     res = []
     round_brackets = []
     square_brackets = []
@@ -546,49 +592,42 @@ def parse_prompt_attention(text: str) -> list[list[tuple[str, float]]]:
     round_bracket_multiplier = 1.1
     square_bracket_multiplier = 1 / 1.1
 
-    def multiply_range(start_position: int, multiplier: float) -> None:
-        for p in range(start_position, len(res)):
-            res[p][1] *= multiplier
-
+    # Process each token from the regex
     for m in re_attention.finditer(text):
-        text = m.group(0)
+        token_text = m.group(0)
         weight = m.group(1)
 
-        if text.startswith("\\"):
-            res.append([text[1:], 1.0])
-        elif text == "(":
+        if token_text.startswith("\\"):
+            # Escaped character
+            res.append([token_text[1:], 1.0])
+        elif token_text == "(":
+            # Opening round bracket - push position to stack
             round_brackets.append(len(res))
-        elif text == "[":
+        elif token_text == "[":
+            # Opening square bracket - push position to stack
             square_brackets.append(len(res))
         elif weight is not None and round_brackets:
-            multiply_range(round_brackets.pop(), float(weight))
-        elif text == ")" and round_brackets:
-            multiply_range(round_brackets.pop(), round_bracket_multiplier)
-        elif text == "]" and square_brackets:
-            multiply_range(square_brackets.pop(), square_bracket_multiplier)
+            # Closing round bracket with weight
+            apply_multiplier_to_range(res, round_brackets.pop(), float(weight))
+        elif token_text == ")" and round_brackets:
+            # Closing round bracket without weight
+            apply_multiplier_to_range(res, round_brackets.pop(), round_bracket_multiplier)
+        elif token_text == "]" and square_brackets:
+            # Closing square bracket
+            apply_multiplier_to_range(res, square_brackets.pop(), square_bracket_multiplier)
         else:
-            parts = re.split(re_break, text)
-            for i, part in enumerate(parts):
-                if i > 0:
-                    res.append(["BREAK", -1])
-                res.append([part, 1.0])
+            # Regular text or unmatched brackets
+            res.extend(process_text_token(token_text))
 
+    # Handle any unclosed brackets
     for pos in round_brackets:
-        multiply_range(pos, round_bracket_multiplier)
+        apply_multiplier_to_range(res, pos, round_bracket_multiplier)
 
     for pos in square_brackets:
-        multiply_range(pos, square_bracket_multiplier)
+        apply_multiplier_to_range(res, pos, square_bracket_multiplier)
 
-    if not res:
-        res = [["", 1.0]]
+    # Merge and finalize the result
+    res = merge_identical_weights(res)
 
-    # merge runs of identical weights
-    i = 0
-    while i + 1 < len(res):
-        if res[i][1] == res[i + 1][1]:
-            res[i][0] += res[i + 1][0]
-            res.pop(i + 1)
-        else:
-            i += 1
-
-    return res
+    # Cast to the expected return type
+    return [[str(text), float(weight)] for text, weight in res]
