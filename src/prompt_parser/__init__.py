@@ -11,16 +11,8 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 
-# a prompt like this: "fantasy landscape with a [mountain:lake:0.25] and [an oak:a christmas tree:0.75][ in foreground::0.6][: in background:0.25] [shoddy:masterful:0.5]"
-# will be represented with prompt_schedule like this (assuming steps=100):
-# [25, 'fantasy landscape with a mountain and an oak in foreground shoddy']
-# [50, 'fantasy landscape with a lake and an oak in foreground in background shoddy']
-# [60, 'fantasy landscape with a lake and an oak in foreground in background masterful']
-# [75, 'fantasy landscape with a lake and an oak in background masterful']
-# [100, 'fantasy landscape with a lake and a christmas tree in background masterful']
-
-schedule_parser = lark.Lark(
-    r"""
+# Grammar for the schedule parser
+SCHEDULE_GRAMMAR = r"""
 !start: (prompt | /[][():]/+)*
 prompt: (emphasized | scheduled | alternate | plain | WHITESPACE)*
 !emphasized: "(" prompt ")"
@@ -31,10 +23,132 @@ alternate: "[" prompt ("|" [prompt])+ "]"
 WHITESPACE: /\s+/
 plain: /([^\\\[\]():|]|\\.)+/
 %import common.SIGNED_NUMBER -> NUMBER
-""",
-)
+"""
+
+# Create the parser with the grammar
+schedule_parser = lark.Lark(SCHEDULE_GRAMMAR)
 
 T = TypeVar("T")
+
+
+def calculate_scheduling_parameters(
+    base_steps: int,
+    hires_steps: int | None = None,
+    *,
+    use_old_scheduling: bool = False,
+) -> tuple[int, int, float]:
+    """
+    Calculate the scheduling parameters based on the steps and mode.
+
+    Args:
+        base_steps: The base number of steps for sampling
+        hires_steps: Optional high-resolution steps
+        use_old_scheduling: Whether to use the legacy scheduling mode
+
+    Returns:
+        A tuple of (int_offset, flt_offset, steps)
+    """
+    if hires_steps is None or use_old_scheduling:
+        return 0, 0.0, base_steps
+    return base_steps, 1.0, hires_steps
+
+
+class StepCollector(lark.Visitor):
+    """Visitor that collects steps from scheduled and alternate nodes."""
+
+    def __init__(self, total_steps: int, *, use_old_scheduling: bool = False, flt_offset: float = 0.0, int_offset: int = 0) -> None:
+        self.steps = [total_steps]
+        self.total_steps = total_steps
+        self.use_old_scheduling = use_old_scheduling
+        self.flt_offset = flt_offset
+        self.int_offset = int_offset
+
+    def scheduled(self, tree: lark.Tree) -> None:
+        """Process a scheduled node to extract its timing information."""
+        s = tree.children[-2]
+        v = float(s)
+
+        v = (v * self.total_steps if v < 1 else v) if self.use_old_scheduling else (v - self.flt_offset) * self.total_steps if "." in s else v - self.int_offset
+
+        tree.children[-2] = min(self.total_steps, int(v))
+        if tree.children[-2] >= 1:
+            self.steps.append(tree.children[-2])
+
+    def alternate(self, _: lark.Tree) -> None:
+        """Process an alternate node which needs step info for all steps."""
+        self.steps.extend(range(1, self.total_steps + 1))
+
+
+class StepEvaluator(lark.Transformer):
+    """Transformer that evaluates a parse tree at a specific step."""
+
+    def __init__(self, step: int):
+        super().__init__()
+        self.step = step
+
+    def scheduled(self, args: list) -> Generator[str, None, None]:
+        """Process a scheduled node at the current step."""
+        before, after, _, when, _ = args
+        yield before or () if self.step <= when else after
+
+    def alternate(self, args: list) -> Generator[str, None, None]:
+        """Process an alternate node at the current step."""
+        args = [arg or "" for arg in args]
+        yield args[(self.step - 1) % len(args)]
+
+    def start(self, args: list) -> str:
+        """Process the start node and return the final prompt string."""
+        return "".join(self._flatten(args))
+
+    def plain(self, args: list) -> Generator[str, None, None]:
+        """Process a plain text node."""
+        yield args[0].value
+
+    def __default__(self, data: Any, children: list, meta: Any) -> Generator[str, None, None]:
+        """Default handler for nodes."""
+        yield from children
+
+    def _flatten(self, x: Any) -> Generator[str, None, None]:
+        """Flatten a nested generator structure into a single string."""
+        if isinstance(x, str):
+            yield x
+        else:
+            for gen in x:
+                yield from self._flatten(gen)
+
+
+def collect_steps_from_tree(tree: lark.Tree, steps: int, *, use_old_scheduling: bool = False, int_offset: int = 0, flt_offset: float = 0.0) -> list[int]:
+    """
+    Collect all the steps that need to be evaluated from a parse tree.
+
+    Args:
+        tree: The parsed tree
+        steps: Total number of steps
+        use_old_scheduling: Whether to use legacy scheduling
+        int_offset: Integer offset for step calculation
+        flt_offset: Float offset for step calculation
+
+    Returns:
+        A sorted list of unique step numbers
+    """
+    collector = StepCollector(steps, use_old_scheduling, flt_offset, int_offset)
+    collector.visit(tree)
+    return sorted(set(collector.steps))
+
+
+def evaluate_tree_at_step(tree: lark.Tree, step: int) -> str:
+    """
+    Evaluate the parse tree at a specific step.
+
+    Args:
+        tree: The parsed tree
+        step: The step to evaluate at
+
+    Returns:
+        The prompt string at that step
+    """
+    evaluator = StepEvaluator(step)
+    return evaluator.transform(tree)
 
 
 def get_learned_conditioning_prompt_schedules(
@@ -49,71 +163,40 @@ def get_learned_conditioning_prompt_schedules(
     Each schedule is a list of tuples (step, prompt) where step is the sampling step
     at which the prompt should be replaced with the next one.
     """
-
-    if hires_steps is None or use_old_scheduling:
-        int_offset = 0
-        flt_offset = 0
-        steps = base_steps
-    else:
-        int_offset = base_steps
-        flt_offset = 1.0
-        steps = hires_steps
-
-    def collect_steps(steps: int, tree: lark.Tree) -> list[int]:
-        res = [steps]
-
-        class CollectSteps(lark.Visitor):
-            def scheduled(self, tree: lark.Tree) -> None:
-                s = tree.children[-2]
-                v = float(s)
-                v = (v * steps if v < 1 else v) if use_old_scheduling else ((v - flt_offset) * steps if "." in s else v - int_offset)
-                tree.children[-2] = min(steps, int(v))
-                if tree.children[-2] >= 1:
-                    res.append(tree.children[-2])
-
-            def alternate(self, _: lark.Tree) -> None:
-                res.extend(range(1, steps + 1))
-
-        CollectSteps().visit(tree)
-        return sorted(set(res))
-
-    def at_step(step: int, tree: lark.Tree) -> str:
-        class AtStep(lark.Transformer):
-            def scheduled(self, args: list) -> Generator[str, None, None]:
-                before, after, _, when, _ = args
-                yield before or () if step <= when else after
-
-            def alternate(self, args: list) -> Generator[str, None, None]:
-                args = [arg or "" for arg in args]
-                yield args[(step - 1) % len(args)]
-
-            def start(self, args: list) -> str:
-                def flatten(x: Any) -> Generator[str, None, None]:
-                    if isinstance(x, str):
-                        yield x
-                    else:
-                        for gen in x:
-                            yield from flatten(gen)
-
-                return "".join(flatten(args))
-
-            def plain(self, args: list) -> Generator[str, None, None]:
-                yield args[0].value
-
-            def __default__(self, data: Any, children: list, meta: Any) -> Generator[str, None, None]:
-                yield from children
-
-        return AtStep().transform(tree)
+    int_offset, flt_offset, steps = calculate_scheduling_parameters(
+        base_steps,
+        hires_steps,
+        use_old_scheduling,
+    )
 
     def get_schedule(prompt: str) -> list[tuple[int, str]]:
         try:
             tree = schedule_parser.parse(prompt)
         except lark.exceptions.LarkError:
             return [[steps, prompt]]
-        return [[t, at_step(t, tree)] for t in collect_steps(steps, tree)]
 
+        step_list = collect_steps_from_tree(
+            tree,
+            steps,
+            use_old_scheduling,
+            int_offset,
+            flt_offset,
+        )
+
+        return [[t, evaluate_tree_at_step(tree, t)] for t in step_list]
+
+    # Cache the schedules to avoid re-parsing identical prompts
     promptdict = {prompt: get_schedule(prompt) for prompt in set(prompts)}
     return [promptdict[prompt] for prompt in prompts]
+
+
+# a prompt like this: "fantasy landscape with a [mountain:lake:0.25] and [an oak:a christmas tree:0.75][ in foreground::0.6][: in background:0.25] [shoddy:masterful:0.5]"
+# will be represented with prompt_schedule like this (assuming steps=100):
+# [25, 'fantasy landscape with a mountain and an oak in foreground shoddy']
+# [50, 'fantasy landscape with a lake and an oak in foreground in background shoddy']
+# [60, 'fantasy landscape with a lake and an oak in foreground in background masterful']
+# [75, 'fantasy landscape with a lake and an oak in background masterful']
+# [100, 'fantasy landscape with a lake and a christmas tree in background masterful']
 
 
 class ScheduledPromptConditioning(NamedTuple):
@@ -200,6 +283,7 @@ def get_learned_conditioning(
     return res
 
 
+# Regular expressions for prompt processing
 re_and = re.compile(r"\bAND\b")
 re_weight = re.compile(r"^((?:\s|.)*?)(?:\s*:\s*([-+]?(?:\d+\.?|\d*\.\d+)))?\s*$")
 
@@ -207,6 +291,18 @@ re_weight = re.compile(r"^((?:\s|.)*?)(?:\s*:\s*([-+]?(?:\d+\.?|\d*\.\d+)))?\s*$
 def get_multicond_prompt_list(
     prompts: SdConditioning | list[str],
 ) -> tuple[list[list[tuple[int, float]]], SdConditioning, dict[str, int]]:
+    """
+    Process prompts for multi-conditional generation.
+
+    Args:
+        prompts: List of prompts to process
+
+    Returns:
+        Tuple containing:
+        - List of index-weight pairs for each prompt
+        - Flattened list of unique subprompts
+        - Mapping from subprompt text to its index
+    """
     res_indexes = []
 
     prompt_indexes = {}
@@ -239,12 +335,16 @@ def get_multicond_prompt_list(
 
 @dataclass
 class ComposableScheduledPromptConditioning:
+    """A composable scheduled prompt conditioning with its weight."""
+
     schedules: list[ScheduledPromptConditioning]
     weight: float = 1.0
 
 
 @dataclass
 class MulticondLearnedConditioning:
+    """Container for multiple learned conditionings with their shape."""
+
     shape: tuple
     batch: list[list[ComposableScheduledPromptConditioning]]
 
@@ -272,6 +372,8 @@ def get_multicond_learned_conditioning(
 
 
 class DictWithShape(dict):
+    """Dictionary with a shape property for tensor-like behavior."""
+
     def __init__(self, x: dict[str, Any]) -> None:
         super().__init__()
         self.update(x)
@@ -291,7 +393,34 @@ class DictWithShape(dict):
         return DictWithShape(result)
 
 
+def find_target_index(cond_schedule: list[ScheduledPromptConditioning], current_step: int) -> int:
+    """
+    Find the index of the conditioning to use at the current step.
+
+    Args:
+        cond_schedule: List of scheduled conditionings
+        current_step: The current step
+
+    Returns:
+        Index of the conditioning to use
+    """
+    return next(
+        (current for current, entry in enumerate(cond_schedule) if current_step <= entry.end_at_step),
+        0,
+    )
+
+
 def reconstruct_cond_batch(c: list[list[ScheduledPromptConditioning]], current_step: int) -> torch.Tensor | DictWithShape:
+    """
+    Reconstruct a batch of conditionings for the current step.
+
+    Args:
+        c: List of conditioning schedules
+        current_step: The current step
+
+    Returns:
+        Tensor or dictionary of tensors with the conditionings
+    """
     param = c[0][0].cond
     is_dict = isinstance(param, dict)
 
@@ -303,10 +432,8 @@ def reconstruct_cond_batch(c: list[list[ScheduledPromptConditioning]], current_s
         res = torch.zeros((len(c), *param.shape), device=param.device, dtype=param.dtype)
 
     for i, cond_schedule in enumerate(c):
-        target_index = next(
-            (current for current, entry in enumerate(cond_schedule) if current_step <= entry.end_at_step),
-            0,
-        )
+        target_index = find_target_index(cond_schedule, current_step)
+
         if is_dict:
             for k, param in cond_schedule[target_index].cond.items():
                 res[k][i] = param
@@ -317,6 +444,15 @@ def reconstruct_cond_batch(c: list[list[ScheduledPromptConditioning]], current_s
 
 
 def stack_conds(tensors: list[torch.Tensor]) -> torch.Tensor:
+    """
+    Stack conditionings with potentially different shapes.
+
+    Args:
+        tensors: List of tensors to stack
+
+    Returns:
+        Stacked tensor
+    """
     # if prompts have wildly different lengths above the limit we'll get tensors of different shapes
     # and won't be able to torch.stack them. So this fixes that.
     token_count = max(x.shape[0] for x in tensors)
@@ -330,6 +466,16 @@ def stack_conds(tensors: list[torch.Tensor]) -> torch.Tensor:
 
 
 def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step: int) -> tuple[list[list[tuple[int, float]]], torch.Tensor | DictWithShape]:
+    """
+    Reconstruct a batch of multi-conditional conditionings for the current step.
+
+    Args:
+        c: Multi-conditional learned conditioning
+        current_step: The current step
+
+    Returns:
+        Tuple of conditioning indices and weights, and the stacked conditionings
+    """
     param = c.batch[0][0].schedules[0].cond
 
     tensors = []
@@ -339,10 +485,7 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step: i
         conds_for_batch = []
 
         for composable_prompt in composable_prompts:
-            target_index = next(
-                (current for current, entry in enumerate(composable_prompt.schedules) if current_step <= entry.end_at_step),
-                0,
-            )
+            target_index = find_target_index(composable_prompt.schedules, current_step)
             conds_for_batch.append((len(tensors), composable_prompt.weight))
             tensors.append(composable_prompt.schedules[target_index].cond)
 
@@ -358,6 +501,7 @@ def reconstruct_multicond_batch(c: MulticondLearnedConditioning, current_step: i
     return conds_list, stacked
 
 
+# Regular expressions for attention parsing
 re_attention = re.compile(
     r"""
 \\\(|
