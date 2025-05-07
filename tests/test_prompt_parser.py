@@ -5,7 +5,8 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from diffusion_prompt_embedder import (
     parse_prompt_attention,
 )
-from diffusion_prompt_embedder.core.embedding import get_embeddings_sd15, get_embeddings_sd15_batch
+from diffusion_prompt_embedder.core.sd15.get_embeddings_sd15 import get_embeddings_sd15
+from diffusion_prompt_embedder.core.sd15.get_embeddings_sd15_batch import get_embeddings_sd15_batch
 
 
 @pytest.fixture(scope="module")
