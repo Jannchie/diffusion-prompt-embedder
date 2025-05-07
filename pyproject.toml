@@ -41,7 +41,7 @@ build-backend = "hatchling.build"
 packages = ["src/diffusion_prompt_embedder"]
 
 [tool.ruff]
-line-length = 300
+line-length = 160
 select = ["ALL"]
 
 ignore = [
@@ -80,6 +80,7 @@ dev = [
 dev = [
     "pytest>=8.3.5",
     "pytest-cov>=6.1.1",
+    "ruff>=0.11.8",
     "torch>=2.0.0",
     "transformers>=4.51.3",
 ]
