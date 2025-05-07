@@ -200,7 +200,7 @@ def get_embeddings_sd15(  # noqa: PLR0913
     return prompt_embeds, neg_prompt_embeds
 
 
-def get_embeddings_sd_15_batch(
+def get_embeddings_sd15_batch(
     tokenizer: CLIPTokenizer,
     text_encoder: CLIPTextModel,
     *,

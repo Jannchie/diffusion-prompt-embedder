@@ -5,7 +5,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from diffusion_prompt_embedder import (
     parse_prompt_attention,
 )
-from diffusion_prompt_embedder.core.embedding import get_embeddings_sd15, get_embeddings_sd_15_batch
+from diffusion_prompt_embedder.core.embedding import get_embeddings_sd15, get_embeddings_sd15_batch
 
 
 @pytest.fixture(scope="module")
@@ -149,7 +149,7 @@ class TestGetEmbeddingsSd15Batch:
         prompts = ["cat", "a (dog:1.2)", "beautiful landscape with mountains"]
 
         # Generate embeddings
-        batch_embeds = get_embeddings_sd_15_batch(
+        batch_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=prompts,
@@ -168,7 +168,7 @@ class TestGetEmbeddingsSd15Batch:
         prompts = [short_prompt, long_prompt]
 
         # Generate embeddings
-        batch_embeds = get_embeddings_sd_15_batch(
+        batch_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=prompts,
@@ -191,7 +191,7 @@ class TestGetEmbeddingsSd15Batch:
         ]
 
         # Generate embeddings
-        batch_embeds = get_embeddings_sd_15_batch(
+        batch_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=prompts,
@@ -206,7 +206,7 @@ class TestGetEmbeddingsSd15Batch:
         prompts = ["cat", "dog"]
 
         # Generate embeddings with clip_skip
-        batch_embeds = get_embeddings_sd_15_batch(
+        batch_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=prompts,
@@ -225,7 +225,7 @@ class TestGetEmbeddingsSd15Batch:
         prompts = [short_prompt, long_prompt]
 
         # Generate embeddings with clip_skip
-        batch_embeds = get_embeddings_sd_15_batch(
+        batch_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=prompts,

@@ -7,11 +7,11 @@ tokenizing prompts, and generating embeddings for use with Stable Diffusion mode
 
 from __future__ import annotations
 
-from diffusion_prompt_embedder.core.embedding import get_embeddings_sd15, get_embeddings_sd_15_batch
+from diffusion_prompt_embedder.core.embedding import get_embeddings_sd15, get_embeddings_sd15_batch
 from diffusion_prompt_embedder.core.parser import parse_prompt_attention
 
 __all__ = [
     "get_embeddings_sd15",
-    "get_embeddings_sd_15_batch",
+    "get_embeddings_sd15_batch",
     "parse_prompt_attention",
 ]
