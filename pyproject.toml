@@ -1,12 +1,19 @@
 [project]
 name = "diffusion-prompt-embedder"
 version = "0.1.0"
-description = "A Python library for parsing and processing prompts with support for embedding and tokenization"
+description = "A Python library for parsing and processing prompts with support for embedding and tokenization."
 readme = "README.md"
 authors = [{ name = "Jianqi Pan", email = "jannchie@gmail.com" }]
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["nlp", "prompt", "tokenization", "embedding", "ai"]
+keywords = [
+    "nlp",
+    "prompt",
+    "tokenization",
+    "embedding",
+    "ai",
+    "stable diffusion",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
