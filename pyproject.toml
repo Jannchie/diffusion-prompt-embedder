@@ -1,6 +1,6 @@
 [project]
 name = "diffusion-prompt-embedder"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Python library for parsing and processing prompts with support for embedding and tokenization."
 readme = "README.md"
 authors = [{ name = "Jianqi Pan", email = "jannchie@gmail.com" }]
