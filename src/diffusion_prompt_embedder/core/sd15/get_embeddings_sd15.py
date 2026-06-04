@@ -28,7 +28,7 @@ def get_embeddings_sd15(  # noqa: PLR0913
         prompt (str): The positive prompt with optional weights in parentheses
         neg_prompt (str): The negative prompt with optional weights in parentheses
         pad_last_block (bool): Whether to pad the last token block to full length
-        clip_skip (int): Number of layers to skip in CLIP model for style control
+        clip_skip (int): CLIP skip, A1111/WebUI semantics (1 = last layer, 2 = penultimate layer)
 
     Returns:
         tuple[torch.Tensor, torch.Tensor]: A tuple containing:
@@ -118,7 +118,7 @@ def get_embeddings_sd15(  # noqa: PLR0913
     neg_prompt_embeds = torch.cat(neg_embeds, dim=1)
 
     # Restore original CLIP layers if clip_skip was used
-    if clip_skip > 0 and original_clip_layers is not None:
+    if clip_skip > 1 and original_clip_layers is not None:
         clip_inner_model(text_encoder).encoder.layers = original_clip_layers
 
     return prompt_embeds, neg_prompt_embeds

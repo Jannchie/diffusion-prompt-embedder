@@ -80,7 +80,8 @@ def setup_clip_for_embedding(
 
     Args:
         text_encoder: The CLIP text encoder model
-        clip_skip: Number of layers to skip in CLIP model
+        clip_skip: CLIP skip in A1111/WebUI semantics (1 = last layer,
+            2 = penultimate layer, ...); values <= 1 leave the model untouched
 
     Returns:
         tuple: (device, dtype, original_clip_layers, clip_skip_applied)
@@ -89,11 +90,13 @@ def setup_clip_for_embedding(
     device = text_encoder.device
     dtype = text_encoder.dtype
 
-    # Store original layers for clip skip feature
+    # Store original layers for clip skip feature.
+    # A1111/WebUI semantics: clip_skip=1 uses the last layer (no skip),
+    # clip_skip=2 the penultimate layer (NAI convention) - k skips k-1 layers.
     original_clip_layers = None
-    if clip_skip > 0:
+    if clip_skip > 1:
         inner = clip_inner_model(text_encoder)
         original_clip_layers = inner.encoder.layers
-        inner.encoder.layers = original_clip_layers[:-clip_skip]
+        inner.encoder.layers = original_clip_layers[: -(clip_skip - 1)]
 
     return device, dtype, original_clip_layers, clip_skip

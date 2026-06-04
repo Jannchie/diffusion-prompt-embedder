@@ -54,11 +54,12 @@ class TestSetupClipForEmbedding:
         encoder = _FlatTextEncoder(num_layers=12)
         original = encoder.encoder.layers
 
+        # A1111 semantics: clip_skip=2 = penultimate layer = drop exactly 1 layer.
         _, _, original_clip_layers, _ = setup_clip_for_embedding(encoder, clip_skip=2)
 
         # Layers were truncated by clip_skip, not silently skipped.
         assert original_clip_layers is original
-        assert len(encoder.encoder.layers) == 10
+        assert len(encoder.encoder.layers) == 11
 
         # Restore path used by the embedding functions.
         clip_inner_model(encoder).encoder.layers = original_clip_layers
@@ -73,11 +74,25 @@ class TestSetupClipForEmbedding:
         _, _, original_clip_layers, _ = setup_clip_for_embedding(encoder, clip_skip=2)
 
         assert original_clip_layers is original
-        assert len(encoder.text_model.encoder.layers) == 10
+        assert len(encoder.text_model.encoder.layers) == 11
 
         clip_inner_model(encoder).encoder.layers = original_clip_layers
         assert encoder.text_model.encoder.layers is original
         assert len(encoder.text_model.encoder.layers) == 12
+
+    def test_clip_skip_three_drops_two_layers(self) -> None:
+        encoder = _FlatTextEncoder(num_layers=12)
+        _, _, original_clip_layers, _ = setup_clip_for_embedding(encoder, clip_skip=3)
+        assert original_clip_layers is not None
+        assert len(encoder.encoder.layers) == 10
+
+    def test_clip_skip_one_is_no_skip(self) -> None:
+        """A1111 semantics: clip_skip=1 means the last layer - no truncation."""
+        encoder = _FlatTextEncoder(num_layers=12)
+        original = encoder.encoder.layers
+        _, _, original_clip_layers, _ = setup_clip_for_embedding(encoder, clip_skip=1)
+        assert original_clip_layers is None
+        assert encoder.encoder.layers is original
 
     def test_clip_skip_zero_leaves_layers_untouched(self) -> None:
         encoder = _FlatTextEncoder(num_layers=12)

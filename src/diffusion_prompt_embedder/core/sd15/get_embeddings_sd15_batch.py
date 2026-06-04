@@ -26,7 +26,7 @@ def get_embeddings_sd15_batch(
         text_encoder (CLIPTextModel): The CLIP text encoder model
         prompts (list[str]): List of prompts, each with optional weights in parentheses
         pad_last_block (bool): Whether to pad the last token block to full length
-        clip_skip (int): Number of layers to skip in CLIP model for style control
+        clip_skip (int): CLIP skip, A1111/WebUI semantics (1 = last layer, 2 = penultimate layer)
 
     Returns:
         torch.Tensor: Tensor of embeddings for all prompts, shape [batch_size, seq_len, hidden_size]
@@ -108,7 +108,7 @@ def get_embeddings_sd15_batch(
     batched_embeds = torch.cat(all_embeds, dim=0)
 
     # Restore original CLIP layers if clip_skip was used
-    if clip_skip > 0 and original_clip_layers is not None:
+    if clip_skip > 1 and original_clip_layers is not None:
         clip_inner_model(text_encoder).encoder.layers = original_clip_layers
 
     return batched_embeds
