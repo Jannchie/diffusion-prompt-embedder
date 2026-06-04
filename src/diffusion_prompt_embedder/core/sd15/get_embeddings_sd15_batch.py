@@ -2,7 +2,7 @@ import torch
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from diffusion_prompt_embedder.clip.tokenization import get_prompts_tokens_with_weights, group_tokens_and_weights
-from diffusion_prompt_embedder.core.embedding import encode_tokens_with_weights, setup_clip_for_embedding
+from diffusion_prompt_embedder.core.embedding import clip_inner_model, encode_tokens_with_weights, setup_clip_for_embedding
 
 
 def get_embeddings_sd15_batch(
@@ -109,6 +109,6 @@ def get_embeddings_sd15_batch(
 
     # Restore original CLIP layers if clip_skip was used
     if clip_skip > 0 and original_clip_layers is not None:
-        text_encoder.text_model.encoder.layers = original_clip_layers
+        clip_inner_model(text_encoder).encoder.layers = original_clip_layers
 
     return batched_embeds

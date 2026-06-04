@@ -2,6 +2,25 @@ import torch
 from transformers import CLIPTextModel
 
 
+def clip_inner_model(text_encoder: CLIPTextModel) -> object:
+    """
+    Resolve the inner CLIP module that owns ``encoder.layers``.
+
+    transformers 4.x wraps the transformer in ``text_encoder.text_model``,
+    while transformers 5.x flattens ``CLIPTextModel`` so ``embeddings`` /
+    ``encoder`` / ``final_layer_norm`` live directly on the model. The same
+    holds for ``CLIPTextModelWithProjection``. Returning ``text_model`` when
+    present and falling back to the encoder itself keeps both layouts working.
+
+    Args:
+        text_encoder: The CLIP text encoder model
+
+    Returns:
+        object: The module exposing ``encoder.layers``
+    """
+    return getattr(text_encoder, "text_model", text_encoder)
+
+
 def encode_tokens_with_weights(
     text_encoder: CLIPTextModel,
     token_groups: list[list[int]],
@@ -72,8 +91,9 @@ def setup_clip_for_embedding(
 
     # Store original layers for clip skip feature
     original_clip_layers = None
-    if clip_skip > 0 and hasattr(text_encoder, "text_model"):
-        original_clip_layers = text_encoder.text_model.encoder.layers
-        text_encoder.text_model.encoder.layers = original_clip_layers[:-clip_skip]
+    if clip_skip > 0:
+        inner = clip_inner_model(text_encoder)
+        original_clip_layers = inner.encoder.layers
+        inner.encoder.layers = original_clip_layers[:-clip_skip]
 
     return device, dtype, original_clip_layers, clip_skip
