@@ -2,7 +2,7 @@ import torch
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from diffusion_prompt_embedder.clip.tokenization import get_prompts_tokens_with_weights, group_tokens_and_weights
-from diffusion_prompt_embedder.core.embedding import clip_inner_model, encode_tokens_with_weights, setup_clip_for_embedding
+from diffusion_prompt_embedder.core.embedding import encode_prompt_chunks_batched
 
 
 def get_embeddings_sd15_batch(
@@ -20,6 +20,11 @@ def get_embeddings_sd15_batch(
     embeddings for use in batch inference. It handles arbitrarily long prompts
     by processing them in chunks, pads all prompts to the same length, and supports
     clip-skip for style control.
+
+    All prompts are padded with EOS to the longest prompt's token length, so every
+    prompt yields the same chunk layout; each chunk position is then encoded with a
+    single batched text-encoder forward (training hot path: a handful of forwards
+    per step instead of one batch-1 forward per chunk per prompt).
 
     Args:
         tokenizer (CLIPTokenizer): The CLIP tokenizer instance
@@ -42,17 +47,14 @@ def get_embeddings_sd15_batch(
             torch_dtype=torch.float16
         ).to("cuda")
 
-        prompt_embeds = get_weighted_text_embeddings_batch(
+        prompt_embeds = get_embeddings_sd15_batch(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompts=["a (white:1.2) cat", "a (blue:1.4) dog", "a red bird"],
         )
     """
-    # Setup CLIP model and get common parameters
-    device, dtype, original_clip_layers, _ = setup_clip_for_embedding(
-        text_encoder,
-        clip_skip,
-    )
+    device = text_encoder.device
+    dtype = text_encoder.dtype
 
     # Get the eos token id from tokenizer
     eos = tokenizer.eos_token_id
@@ -71,44 +73,25 @@ def get_embeddings_sd15_batch(
         all_prompt_weights.append(prompt_weights)
         max_token_len = max(max_token_len, len(prompt_tokens))
 
-    # Pad all prompts to the same length
-    for i in range(len(all_prompt_tokens)):
-        token_len = len(all_prompt_tokens[i])
-        if token_len < max_token_len:
-            padding_len = max_token_len - token_len
-            all_prompt_tokens[i] = all_prompt_tokens[i] + [eos] * padding_len
-            all_prompt_weights[i] = all_prompt_weights[i] + [1.0] * padding_len
-
-    # Initialize list to hold embeddings for each prompt
-    all_embeds = []
-
-    # Process each prompt separately
-    for prompt_idx in range(len(prompts)):
-        # Group tokens for processing in CLIP-compatible chunks (77 tokens per chunk)
+    # Pad all prompts to the same length and group into 77-token chunks
+    token_groups: list[list[list[int]]] = []
+    weight_groups: list[list[list[float]]] = []
+    for prompt_tokens, prompt_weights in zip(all_prompt_tokens, all_prompt_weights, strict=True):
+        padding_len = max_token_len - len(prompt_tokens)
         prompt_token_groups, prompt_weight_groups = group_tokens_and_weights(
-            all_prompt_tokens[prompt_idx].copy(),
-            all_prompt_weights[prompt_idx].copy(),
+            [*prompt_tokens, *([eos] * padding_len)],
+            [*prompt_weights, *([1.0] * padding_len)],
             pad_last_block=pad_last_block,
         )
+        token_groups.append(prompt_token_groups)
+        weight_groups.append(prompt_weight_groups)
 
-        # Process token groups through the shared encoder function
-        embeds = encode_tokens_with_weights(
-            text_encoder,
-            prompt_token_groups,
-            prompt_weight_groups,
-            device,
-            dtype,
-        )
-
-        # Concatenate all token group embeddings for this prompt
-        prompt_embeds = torch.cat(embeds, dim=1)
-        all_embeds.append(prompt_embeds)
-
-    # Stack all prompt embeddings into a batch
-    batched_embeds = torch.cat(all_embeds, dim=0)
-
-    # Restore original CLIP layers if clip_skip was used
-    if clip_skip > 1 and original_clip_layers is not None:
-        clip_inner_model(text_encoder).encoder.layers = original_clip_layers
-
-    return batched_embeds
+    # One batched text-encoder forward per chunk position
+    return encode_prompt_chunks_batched(
+        text_encoder,
+        token_groups,
+        weight_groups,
+        device,
+        dtype,
+        clip_skip,
+    )

@@ -2,7 +2,7 @@ import torch
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from diffusion_prompt_embedder.clip.tokenization import get_prompts_tokens_with_weights, group_tokens_and_weights
-from diffusion_prompt_embedder.core.embedding import clip_inner_model, encode_tokens_with_weights, setup_clip_for_embedding
+from diffusion_prompt_embedder.core.embedding import encode_prompt_chunks_batched
 
 
 def get_embeddings_sd15(  # noqa: PLR0913
@@ -21,6 +21,10 @@ def get_embeddings_sd15(  # noqa: PLR0913
     generates CLIP text embeddings for use in Stable Diffusion inference. It can
     handle arbitrarily long prompts by processing them in chunks and supports
     clip-skip for style control.
+
+    The positive and negative prompts are padded to the same token length and
+    encoded together as a 2-row batch (one text-encoder forward per chunk
+    position) instead of one forward per chunk per prompt.
 
     Args:
         tokenizer (CLIPTokenizer): The CLIP tokenizer instance
@@ -46,18 +50,15 @@ def get_embeddings_sd15(  # noqa: PLR0913
             torch_dtype=torch.float16
         ).to("cuda")
 
-        prompt_embeds, neg_prompt_embeds = get_weighted_text_embeddings_sd15(
+        prompt_embeds, neg_prompt_embeds = get_embeddings_sd15(
             tokenizer=tokenizer,
             text_encoder=text_encoder,
             prompt="a (white:1.2) cat",
             neg_prompt="blur, bad quality",
         )
     """
-    # Setup CLIP model and get common parameters
-    device, dtype, original_clip_layers, _ = setup_clip_for_embedding(
-        text_encoder,
-        clip_skip,
-    )
+    device = text_encoder.device
+    dtype = text_encoder.dtype
 
     # Get the eos token id from tokenizer
     eos = tokenizer.eos_token_id
@@ -73,52 +74,26 @@ def get_embeddings_sd15(  # noqa: PLR0913
     )
 
     # Pad the shorter prompt to match the longer one for consistent batch processing
-    prompt_token_len = len(prompt_tokens)
-    neg_prompt_token_len = len(neg_prompt_tokens)
-    if prompt_token_len > neg_prompt_token_len:
-        # Pad negative prompt with EOS tokens to match positive prompt length
-        neg_prompt_tokens = neg_prompt_tokens + [eos] * abs(prompt_token_len - neg_prompt_token_len)
-        neg_prompt_weights = neg_prompt_weights + [1.0] * abs(prompt_token_len - neg_prompt_token_len)
-    else:
-        # Pad positive prompt with EOS tokens to match negative prompt length
-        prompt_tokens = prompt_tokens + [eos] * abs(prompt_token_len - neg_prompt_token_len)
-        prompt_weights = prompt_weights + [1.0] * abs(prompt_token_len - neg_prompt_token_len)
+    max_token_len = max(len(prompt_tokens), len(neg_prompt_tokens))
+    token_groups: list[list[list[int]]] = []
+    weight_groups: list[list[list[float]]] = []
+    for tokens, weights in ((prompt_tokens, prompt_weights), (neg_prompt_tokens, neg_prompt_weights)):
+        padding_len = max_token_len - len(tokens)
+        groups, group_weights = group_tokens_and_weights(
+            [*tokens, *([eos] * padding_len)],
+            [*weights, *([1.0] * padding_len)],
+            pad_last_block=pad_last_block,
+        )
+        token_groups.append(groups)
+        weight_groups.append(group_weights)
 
-    # Group tokens for processing in CLIP-compatible chunks (77 tokens per chunk)
-    prompt_token_groups, prompt_weight_groups = group_tokens_and_weights(
-        prompt_tokens.copy(),
-        prompt_weights.copy(),
-        pad_last_block=pad_last_block,
-    )
-    neg_prompt_token_groups, neg_prompt_weight_groups = group_tokens_and_weights(
-        neg_prompt_tokens.copy(),
-        neg_prompt_weights.copy(),
-        pad_last_block=pad_last_block,
-    )
-
-    # Process token groups through the shared encoder function
-    embeds = encode_tokens_with_weights(
+    # Encode positive and negative prompts together, one forward per chunk position
+    embeds = encode_prompt_chunks_batched(
         text_encoder,
-        prompt_token_groups,
-        prompt_weight_groups,
+        token_groups,
+        weight_groups,
         device,
         dtype,
+        clip_skip,
     )
-
-    neg_embeds = encode_tokens_with_weights(
-        text_encoder,
-        neg_prompt_token_groups,
-        neg_prompt_weight_groups,
-        device,
-        dtype,
-    )
-
-    # Concatenate all token group embeddings
-    prompt_embeds = torch.cat(embeds, dim=1)
-    neg_prompt_embeds = torch.cat(neg_embeds, dim=1)
-
-    # Restore original CLIP layers if clip_skip was used
-    if clip_skip > 1 and original_clip_layers is not None:
-        clip_inner_model(text_encoder).encoder.layers = original_clip_layers
-
-    return prompt_embeds, neg_prompt_embeds
+    return embeds[0:1], embeds[1:2]
