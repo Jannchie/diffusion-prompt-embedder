@@ -144,7 +144,14 @@ class TestBatchMatchesReference:
 
 
 class TestSinglePromptPair:
-    def test_pos_neg_match_reference(self, tokenizer: _FakeTokenizer, text_encoder: CLIPTextModel) -> None:
+    def test_pos_neg_bitwise_match_reference(self, tokenizer: _FakeTokenizer, text_encoder: CLIPTextModel) -> None:
+        """Preview path contract: pos/neg stay in separate batch-1 forwards.
+
+        Inference stacks (diffusers/WebUI) encode each prompt individually, so
+        the single-prompt API must be BIT-identical to the per-prompt reference -
+        batching pos+neg into one forward changes fp16 matmul reduction order.
+        torch.equal (not assert_close) pins that contract.
+        """
         prompt, neg_prompt = "a (white:1.2) cat", "blur, bad quality, (worst:1.4)"
         with torch.no_grad():
             expected = _reference_batch(tokenizer, text_encoder, [prompt, neg_prompt], pad_last_block=True)
@@ -155,8 +162,8 @@ class TestSinglePromptPair:
                 neg_prompt=neg_prompt,
                 pad_last_block=True,
             )
-        torch.testing.assert_close(actual_pos, expected[0:1])
-        torch.testing.assert_close(actual_neg, expected[1:2])
+        assert torch.equal(actual_pos, expected[0:1])
+        assert torch.equal(actual_neg, expected[1:2])
 
     def test_long_pos_short_neg(self, tokenizer: _FakeTokenizer, text_encoder: CLIPTextModel) -> None:
         with torch.no_grad():

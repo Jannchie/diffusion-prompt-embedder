@@ -23,8 +23,10 @@ def get_embeddings_sd15(  # noqa: PLR0913
     clip-skip for style control.
 
     The positive and negative prompts are padded to the same token length and
-    encoded together as a 2-row batch (one text-encoder forward per chunk
-    position) instead of one forward per chunk per prompt.
+    encoded separately, one batch-1 forward per chunk position. Keeping each
+    prompt in its own forward preserves bit-identity with inference stacks
+    (diffusers/WebUI encode prompts individually; batching them together
+    changes fp16 matmul reduction order and drifts by ~1 ulp).
 
     Args:
         tokenizer (CLIPTokenizer): The CLIP tokenizer instance
@@ -87,13 +89,17 @@ def get_embeddings_sd15(  # noqa: PLR0913
         token_groups.append(groups)
         weight_groups.append(group_weights)
 
-    # Encode positive and negative prompts together, one forward per chunk position
-    embeds = encode_prompt_chunks_batched(
-        text_encoder,
-        token_groups,
-        weight_groups,
-        device,
-        dtype,
-        clip_skip,
+    # Encode each prompt separately (batch-1 per chunk position): bit-identical
+    # to how inference stacks encode, unlike batching pos+neg into one forward.
+    prompt_embeds, neg_prompt_embeds = (
+        encode_prompt_chunks_batched(
+            text_encoder,
+            [groups],
+            [group_weights],
+            device,
+            dtype,
+            clip_skip,
+        )
+        for groups, group_weights in zip(token_groups, weight_groups, strict=True)
     )
-    return embeds[0:1], embeds[1:2]
+    return prompt_embeds, neg_prompt_embeds
