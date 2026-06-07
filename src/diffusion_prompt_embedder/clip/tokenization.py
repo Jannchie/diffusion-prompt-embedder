@@ -53,8 +53,10 @@ def group_tokens_and_weights(
         new_token_ids.append(temp_77_token_ids)
         new_weights.append(temp_77_weights)
 
-    # Process remaining tokens if any exist
-    if len(token_ids) > 0:
+    # Process remaining tokens if any exist. Also emit a block when there are
+    # no content tokens at all (empty prompt), so the result is the standard
+    # unconditional chunk [BOS, EOS*76] instead of an empty list.
+    if len(token_ids) > 0 or len(new_token_ids) == 0:
         # Calculate padding length if pad_last_block is True
         padding_len = 75 - len(token_ids) if pad_last_block else 0
 
@@ -82,7 +84,8 @@ def get_prompts_tokens_with_weights(
     Args:
         clip_tokenizer (CLIPTokenizer): The CLIP tokenizer instance
         prompt (str | None): A prompt string with optional weights in parentheses
-                            If None or empty, defaults to "empty"
+                            If None or empty, returns no tokens (the chunker
+                            then produces the standard unconditional encoding)
 
     Returns:
         tuple: A tuple containing:
@@ -95,9 +98,11 @@ def get_prompts_tokens_with_weights(
             prompt="a (red:1.5) cat"
         )
     """
-    # Use "empty" as default if prompt is None or empty
+    # Empty prompt: no content tokens. The chunker then emits the standard
+    # unconditional encoding [BOS, EOS*76], matching how diffusers / WebUI /
+    # sd-scripts encode "" (must NOT tokenize a literal placeholder word).
     if (prompt is None) or (len(prompt) < 1):
-        prompt = "empty"
+        return [], []
 
     # Parse the prompt to get text chunks and their weights
     texts_and_weights = parse_prompt_attention(prompt)
